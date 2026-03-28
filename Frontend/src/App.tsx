@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { AppShell, type AppPage } from './components/AppShell'
+import { GetVidAnalysisPage } from './components/GetVidAnalysisPage'
 import { IssueDashboard } from './components/IssueDashboard'
 import { SettingsPage } from './components/SettingsPage'
 
@@ -8,7 +9,13 @@ function App() {
 
   return (
     <AppShell active={page} onNavigate={setPage}>
-      {page === 'issues' ? <IssueDashboard /> : <SettingsPage />}
+      {page === 'issues' ? (
+        <IssueDashboard />
+      ) : page === 'vid-analysis' ? (
+        <GetVidAnalysisPage />
+      ) : (
+        <SettingsPage />
+      )}
     </AppShell>
   )
 }

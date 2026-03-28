@@ -1,0 +1,14 @@
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+Backend/.venv/
+.venv/
+
+# Railtracks local session / trace data
+Backend/.railtracks/
+.railtracks/

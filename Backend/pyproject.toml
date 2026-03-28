@@ -1,0 +1,17 @@
+[project]
+name = "respondo-backend"
+version = "0.1.0"
+description = "FastAPI backend for Respondo (video analysis, etc.)"
+readme = false
+requires-python = ">=3.11"
+dependencies = [
+  "railtracks",
+  "opencv-python",
+  "python-dotenv",
+  "fastapi",
+  "uvicorn[standard]",
+  "python-multipart",
+]
+
+[tool.uv]
+package = false
