@@ -53,14 +53,28 @@ function IssueCard({
 
       {open ? (
         <div className="issue-card-body">
-          <div className="issue-video" role="img" aria-label="Video placeholder">
-            <div className="issue-video-inner">
-              <span className="issue-video-icon" aria-hidden />
-              <span>Video feed placeholder</span>
-              <span className="issue-video-hint">
-                Notion attachment will appear here
-              </span>
-            </div>
+          <div
+            className={`issue-video${issue.videoPreview ? ' issue-video--filled' : ''}`}
+            role={issue.videoPreview ? undefined : 'img'}
+            aria-label={issue.videoPreview ? undefined : 'Video placeholder'}
+          >
+            {issue.videoPreview ? (
+              <video
+                className="issue-video-player"
+                controls
+                preload="metadata"
+                src={issue.videoPreview.dataUrl}
+                aria-label={issue.videoPreview.fileName || 'Uploaded issue video'}
+              />
+            ) : (
+              <div className="issue-video-inner">
+                <span className="issue-video-icon" aria-hidden />
+                <span>Video feed placeholder</span>
+                <span className="issue-video-hint">
+                  Notion attachment will appear here
+                </span>
+              </div>
+            )}
           </div>
 
           <div className="issue-detail-grid">

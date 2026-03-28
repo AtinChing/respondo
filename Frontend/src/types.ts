@@ -3,6 +3,14 @@ export type IssueStatus =
   | 'resolved'
   | 'incorrectly_classified'
 
+export type IssueSource = 'seed' | 'video_analysis'
+
+export type IssueVideoPreview = {
+  dataUrl: string
+  fileName: string
+  mimeType: string
+}
+
 export type SecurityManualDock = {
   section_trail: string[]
   snippet: string
@@ -21,6 +29,9 @@ export type Issue = {
   location?: string
   department?: string
   classificationNote?: string
+  source?: IssueSource
+  analysis?: VideoAnalysisResult
+  videoPreview?: IssueVideoPreview
 }
 
 export type Member = {

@@ -1,5 +1,6 @@
 import { useId, useState } from 'react'
-import type { VideoAnalysisResult } from '../types'
+import { upsertVideoAnalysisIssue } from '../hooks/useIssues'
+import type { Issue, IssueVideoPreview, VideoAnalysisResult } from '../types'
 
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL?.trim() ||
@@ -27,6 +28,28 @@ function buildEndpoint(baseUrl: string) {
     : `${trimmed}/api/analyze-video`
 }
 
+function readVideoPreview(file: File): Promise<IssueVideoPreview> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onerror = () => {
+      reject(new Error(`Could not read ${file.name} for issue preview storage.`))
+    }
+    reader.onload = () => {
+      if (typeof reader.result !== 'string') {
+        reject(new Error(`Could not serialize ${file.name} for issue preview storage.`))
+        return
+      }
+
+      resolve({
+        dataUrl: reader.result,
+        fileName: file.name,
+        mimeType: file.type || 'video/mp4',
+      })
+    }
+    reader.readAsDataURL(file)
+  })
+}
+
 export function GetVidAnalysisPage() {
   const inputId = useId()
   const [file, setFile] = useState<File | null>(null)
@@ -35,6 +58,8 @@ export function GetVidAnalysisPage() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<VideoAnalysisResult | null>(null)
+  const [savedIssue, setSavedIssue] = useState<Issue | null>(null)
+  const [saveError, setSaveError] = useState<string | null>(null)
 
   return (
     <div className="page">
@@ -63,6 +88,8 @@ export function GetVidAnalysisPage() {
 
             setLoading(true)
             setError(null)
+            setSaveError(null)
+            setSavedIssue(null)
 
             try {
               const response = await fetch(buildEndpoint(API_BASE_URL), {
@@ -80,7 +107,29 @@ export function GetVidAnalysisPage() {
                 throw new Error(detail ?? 'Backend request failed.')
               }
 
-              setResult(payload as VideoAnalysisResult)
+              const analysisResult = payload as VideoAnalysisResult
+              setResult(analysisResult)
+
+              try {
+                const videoPreview = await readVideoPreview(file)
+                setSavedIssue(upsertVideoAnalysisIssue(analysisResult, videoPreview))
+              } catch (storageError) {
+                try {
+                  setSavedIssue(upsertVideoAnalysisIssue(analysisResult))
+                  setSaveError(
+                    storageError instanceof Error
+                      ? `Issue saved, but the original video could not be stored for dashboard playback: ${storageError.message}`
+                      : 'Issue saved, but the original video could not be stored for dashboard playback.',
+                  )
+                } catch (fallbackStorageError) {
+                  setSavedIssue(null)
+                  setSaveError(
+                    fallbackStorageError instanceof Error
+                      ? `Analysis succeeded, but saving the issue failed: ${fallbackStorageError.message}`
+                      : 'Analysis succeeded, but saving the issue failed.',
+                  )
+                }
+              }
             } catch (requestError) {
               setError(
                 requestError instanceof Error
@@ -141,6 +190,12 @@ export function GetVidAnalysisPage() {
           </button>
 
           {error ? <p className="inline-error">{error}</p> : null}
+          {saveError ? <p className="inline-error">{saveError}</p> : null}
+          {savedIssue ? (
+            <p className="field-value">
+              Saved to the issue dashboard as <strong>{savedIssue.title}</strong>.
+            </p>
+          ) : null}
         </form>
 
         <section className="analysis-card">
