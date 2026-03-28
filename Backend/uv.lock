@@ -1783,6 +1783,7 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "fastapi" },
+    { name = "httpx" },
     { name = "opencv-python" },
     { name = "python-dotenv" },
     { name = "python-multipart" },
@@ -1793,6 +1794,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "fastapi" },
+    { name = "httpx" },
     { name = "opencv-python" },
     { name = "python-dotenv" },
     { name = "python-multipart" },

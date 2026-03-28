@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 
-export type AppPage = 'issues' | 'vid-analysis' | 'settings'
+export type AppPage = 'issues' | 'vid-analysis' | 'phone-calls' | 'settings'
 
 type AppShellProps = {
   active: AppPage
@@ -14,6 +14,11 @@ const navItems: { id: AppPage; label: string; description: string }[] = [
     id: 'vid-analysis',
     label: 'Get Vid Analysis',
     description: 'Upload & OpenAI video summary',
+  },
+  {
+    id: 'phone-calls',
+    label: 'Outbound calls',
+    description: 'List numbers & trigger dial',
   },
   {
     id: 'settings',

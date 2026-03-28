@@ -7,13 +7,17 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from bland_caller import router as bland_router
+from vapi_caller import router as vapi_router
 from video_agent import run_video_analysis
 
 load_dotenv()
 
 ALLOWED_SUFFIXES = {".mp4", ".mov", ".webm", ".mkv", ".avi", ".m4v"}
 
-app = FastAPI(title="Respondo video analysis")
+app = FastAPI(title="Respondo backend")
+app.include_router(bland_router, prefix="/api")
+app.include_router(vapi_router, prefix="/api")
 
 app.add_middleware(
     CORSMiddleware,
