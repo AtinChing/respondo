@@ -8,6 +8,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from bland_caller import router as bland_router
+from report_generation_agent import (
+    GenerateIssueReportRequest,
+    GenerateIssueReportResponse,
+    generate_issue_report_api,
+)
 from vapi_caller import router as vapi_router
 from video_agent import run_video_analysis
 
@@ -42,6 +47,24 @@ class AnalyzeVideoResponse(BaseModel):
 @app.get("/health")
 def health():
     return {"ok": True}
+
+
+@app.post("/api/generate-issue-report", response_model=GenerateIssueReportResponse)
+async def generate_issue_report_endpoint(body: GenerateIssueReportRequest):
+    if not os.environ.get("OPENAI_API_KEY", "").strip():
+        raise HTTPException(
+            status_code=503,
+            detail="OPENAI_API_KEY is not set on the server",
+        )
+    try:
+        return await generate_issue_report_api(body)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Report generation failed: {e!s}",
+        ) from e
 
 
 @app.post("/api/analyze-video", response_model=AnalyzeVideoResponse)

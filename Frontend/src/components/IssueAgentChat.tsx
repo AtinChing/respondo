@@ -1,18 +1,88 @@
 /**
- * Chat UI using the same Vercel AI SDK + HTTP streaming pattern described in
- * ASSISTANT_UI_DOCS.md (Thread + Composer layout). Transport: DefaultChatTransport → POST /api/chat.
- * Presentation follows Gemini-style chat (soft shell, rounded bubbles); model is fixed on the server.
+ * Chat UI: DefaultChatTransport → POST /api/chat.
+ * Renders text and visible tool calls (e.g. Report generation agent).
  */
 import { useChat } from '@ai-sdk/react'
-import { DefaultChatTransport } from 'ai'
-import { useEffect, useMemo, useRef } from 'react'
+import { DefaultChatTransport, isToolUIPart, type UIMessage } from 'ai'
+
+type ChatPart = UIMessage['parts'][number]
+import { useEffect, useMemo, useRef, type ReactNode } from 'react'
+import { useIssueReports } from '../context/IssueReportsContext'
 import type { Issue } from '../types'
 
-function messageText(parts: { type: string; text?: string }[]): string {
+function messageText(parts: ChatPart[]): string {
   return parts
     .filter((p): p is { type: 'text'; text: string } => p.type === 'text')
     .map((p) => p.text)
     .join('')
+}
+
+function toolDisplayTitle(part: ChatPart): string | null {
+  if (!isToolUIPart(part)) return null
+  if (part.type === 'dynamic-tool') return part.toolName
+  if (part.type === 'tool-generateIssueReport') return 'Report generation agent'
+  if (part.type.startsWith('tool-')) return part.type.slice('tool-'.length)
+  return 'Tool'
+}
+
+function toolStateLabel(state: string): string {
+  switch (state) {
+    case 'input-streaming':
+      return 'Preparing tool call…'
+    case 'input-available':
+      return 'Calling Report generation agent…'
+    case 'output-available':
+      return 'Finished — report ready for Assets'
+    case 'output-error':
+      return 'Tool failed'
+    default:
+      return state
+  }
+}
+
+function ToolCallCard({ part }: { part: ChatPart }) {
+  if (!isToolUIPart(part)) return null
+  const title = toolDisplayTitle(part) ?? 'Tool'
+  const state = part.state
+
+  let detail: string | null = null
+  if (state === 'output-available' && 'output' in part && part.output && typeof part.output === 'object') {
+    const o = part.output as { reportId?: string; agentName?: string }
+    if (o.reportId) detail = `Report ID: ${o.reportId}`
+  }
+  if (state === 'output-error' && 'errorText' in part && part.errorText) {
+    detail = part.errorText
+  }
+
+  return (
+    <div className="gemini-tool-card" role="status">
+      <div className="gemini-tool-card-head">
+        <span className="gemini-tool-card-badge">Tool</span>
+        <span className="gemini-tool-card-title">{title}</span>
+      </div>
+      <p className="gemini-tool-card-state">{toolStateLabel(state)}</p>
+      {detail && <p className="gemini-tool-card-detail">{detail}</p>}
+    </div>
+  )
+}
+
+function AssistantMessageBody({ parts }: { parts: ChatPart[] }) {
+  const nodes: ReactNode[] = []
+  parts.forEach((part, i) => {
+    if (part.type === 'text' && part.text.trim()) {
+      nodes.push(
+        <div key={`t-${i}`} className="gemini-msg-bubble">
+          {part.text}
+        </div>,
+      )
+    } else if (part.type === 'step-start' || part.type === 'reasoning') {
+      /* skip */
+    } else if (isToolUIPart(part)) {
+      nodes.push(<ToolCallCard key={part.toolCallId ?? `tool-${i}`} part={part} />)
+    }
+  })
+  if (nodes.length === 0) return null
+  return <div className="gemini-msg-stack">{nodes}</div>
 }
 
 type IssueAgentChatProps = {
@@ -21,23 +91,12 @@ type IssueAgentChatProps = {
 }
 
 export function IssueAgentChat({ issue, onClose }: IssueAgentChatProps) {
-  const issueBody = useMemo(
-    () => ({
-      issueId: issue.id,
-      title: issue.title,
-      date: issue.date,
-      time: issue.time,
-      description: issue.description,
-      status: issue.status,
-      reason_flagged: issue.reason_flagged,
-      security_manual_dock: {
-        section_trail: issue.security_manual_dock.section_trail,
-        snippet: issue.security_manual_dock.snippet,
-        contact_department: issue.security_manual_dock.contact_department,
-      },
-    }),
-    [issue],
-  )
+  const issueBody = useMemo(() => ({ ...issue }), [issue])
+  const { appendReport } = useIssueReports()
+  const issueRef = useRef(issue)
+  useEffect(() => {
+    issueRef.current = issue
+  }, [issue])
 
   const transport = useMemo(
     () =>
@@ -51,6 +110,32 @@ export function IssueAgentChat({ issue, onClose }: IssueAgentChatProps) {
   const { messages, sendMessage, status, error, stop } = useChat({
     id: `issue-chat-${issue.id}`,
     transport,
+    onFinish: ({ message }) => {
+      if (message.role !== 'assistant') return
+      for (const part of message.parts) {
+        if (
+          part.type === 'tool-generateIssueReport' &&
+          part.state === 'output-available' &&
+          part.output &&
+          typeof part.output === 'object'
+        ) {
+          const o = part.output as {
+            reportId?: string
+            reportMarkdown?: string
+            issueId?: string
+          }
+          if (o.reportId && o.reportMarkdown) {
+            appendReport({
+              id: o.reportId,
+              issueId: o.issueId || issueRef.current.id,
+              issueTitle: issueRef.current.title,
+              createdAt: new Date().toISOString(),
+              markdown: o.reportMarkdown,
+            })
+          }
+        }
+      }
+    },
   })
 
   const viewportRef = useRef<HTMLDivElement>(null)
@@ -92,25 +177,33 @@ export function IssueAgentChat({ issue, onClose }: IssueAgentChatProps) {
         <div className="gemini-chat-thread" ref={viewportRef}>
           {messages.length === 0 && (
             <p className="gemini-chat-empty">
-              Ask about this incident, next steps, or how to document it. Replies stream from the
-              server; the model is fixed and not selectable here.
+              Ask about this incident or say <strong>“Please generate an issue report for me.”</strong>{' '}
+              The agent can call the <strong>Report generation agent</strong> tool (shown in the
+              thread). Full Markdown is saved under <strong>Assets</strong>.
             </p>
           )}
           {messages.map((m) => {
-            if (m.role !== 'user' && m.role !== 'assistant') return null
-            const text = messageText(m.parts)
-            if (!text.trim()) return null
-            return (
-              <div
-                key={m.id}
-                className={`gemini-msg gemini-msg--${m.role}`}
-              >
-                <span className="gemini-msg-label">
-                  {m.role === 'user' ? 'You' : 'Agent'}
-                </span>
-                <div className="gemini-msg-bubble">{text}</div>
-              </div>
-            )
+            if (m.role === 'user') {
+              const text = messageText(m.parts)
+              if (!text.trim()) return null
+              return (
+                <div key={m.id} className="gemini-msg gemini-msg--user">
+                  <span className="gemini-msg-label">You</span>
+                  <div className="gemini-msg-bubble">{text}</div>
+                </div>
+              )
+            }
+            if (m.role === 'assistant') {
+              const body = <AssistantMessageBody parts={m.parts} />
+              if (!body) return null
+              return (
+                <div key={m.id} className="gemini-msg gemini-msg--assistant">
+                  <span className="gemini-msg-label">Agent</span>
+                  {body}
+                </div>
+              )
+            }
+            return null
           })}
         </div>
 

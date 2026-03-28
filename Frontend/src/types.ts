@@ -36,3 +36,12 @@ export type Department = {
   name: string
   members: Member[]
 }
+
+/** Markdown report produced by the Report generation agent (stored locally). */
+export type IssueReportAsset = {
+  id: string
+  issueId: string
+  issueTitle: string
+  createdAt: string
+  markdown: string
+}

@@ -91,5 +91,9 @@ export function useIssues() {
     )
   }, [])
 
-  return { issues, setStatus }
+  const removeIssue = useCallback((id: string) => {
+    setIssues((prev) => prev.filter((i) => i.id !== id))
+  }, [])
+
+  return { issues, setStatus, removeIssue }
 }
