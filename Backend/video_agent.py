@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import hashlib
 import json
+import logging
 import os
 import uuid
 from datetime import datetime, timezone
@@ -33,6 +35,7 @@ def _load_runtime_env() -> None:
 _load_runtime_env()
 
 SUPPORTED_MANUAL_EXTENSIONS = (".txt", ".md", ".pdf", ".jsonl")
+logger = logging.getLogger("uvicorn.error")
 INCIDENT_TYPES = (
     "FIRE",
     "THEFT_OR_ROBBERY",
@@ -91,12 +94,21 @@ class IncidentClassification(BaseModel):
     severity: Literal["LOW", "MEDIUM", "HIGH"]
     summary: str
     description: str
-    primary_department: str
-    secondary_departments: list[str] = Field(default_factory=list)
     recommended_actions: list[str] = Field(default_factory=list)
     reasoning: str
     confidence: float = Field(ge=0, le=1)
-    manual_search_query: str | None = None
+
+
+@dataclass(frozen=True)
+class ManualRouteEntry:
+    id: str
+    doc_type: str
+    incident_type: str
+    primary_department: str
+    secondary_departments: list[str]
+    content: str
+    source_document: str
+    metadata: dict[str, Any]
 
 
 class VideoAnalysisResponse(BaseModel):
@@ -152,11 +164,11 @@ class VideoIssueAgent:
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
         self.trace_directory = trace_directory
-        self.client = self._build_client()
-
         self.manual_docs_dir.mkdir(parents=True, exist_ok=True)
         self.chroma_path.mkdir(parents=True, exist_ok=True)
         self.trace_directory.mkdir(parents=True, exist_ok=True)
+        self.client = self._build_client()
+        self.manual_routes = self._load_manual_routes()
 
     @classmethod
     def from_env(cls) -> "VideoIssueAgent":
@@ -227,29 +239,70 @@ class VideoIssueAgent:
         incident_id: str | None = None,
         camera_id: str | None = None,
     ) -> VideoAnalysisResponse:
+        analysis_label = _analysis_label(
+            original_filename=original_filename or video_path.name,
+            incident_id=incident_id,
+            camera_id=camera_id,
+        )
+        logger.info(
+            "[%s] analysis.started model=%s embedding_model=%s",
+            analysis_label,
+            self.model,
+            self.embedding_model,
+        )
         frames, frame_parts = self._extract_frames(video_path)
         if not frames or not frame_parts:
             raise VideoAnalysisError(f"Could not extract usable frames from {video_path.name}.")
+        logger.info(
+            "[%s] frames.extracted sampled_frames=%d",
+            analysis_label,
+            len(frames),
+        )
 
+        logger.info("[%s] classification.requested", analysis_label)
         classification = self._classify_frames(
             frame_parts,
             original_filename=original_filename or video_path.name,
             incident_id=incident_id,
             camera_id=camera_id,
         )
+        logger.info(
+            "[%s] classification.completed flagged=%s incident_type=%s severity=%s confidence=%.2f",
+            analysis_label,
+            classification.flagged,
+            classification.incident_type,
+            classification.severity,
+            classification.confidence,
+        )
 
+        primary_department = "Monitoring Only"
+        secondary_departments: list[str] = []
         if not classification.flagged:
             classification.incident_type = "NON_ACTIONABLE"
-            classification.manual_search_query = None
-            if classification.primary_department.lower() == "none":
-                classification.primary_department = "Monitoring Only"
+            logger.info(
+                "[%s] routing.not_flagged department=%s",
+                analysis_label,
+                primary_department,
+            )
 
         manual_index: ManualIndexResult | None = None
         manual_matches: list[ManualMatch] = []
-        if classification.flagged and classification.manual_search_query:
-            manual_index = self.index_manuals()
-            if manual_index.docs_indexed > 0:
-                manual_matches = self.search_manuals(classification.manual_search_query)
+        manual_search_query: str | None = None
+        if classification.flagged:
+            (
+                primary_department,
+                secondary_departments,
+                manual_matches,
+                manual_index,
+                manual_search_query,
+            ) = self.route_departments_from_manual(classification)
+            logger.info(
+                "[%s] routing.flagged primary_department=%s secondary_departments=%s manual_query=%s",
+                analysis_label,
+                primary_department,
+                ", ".join(secondary_departments) or "NONE",
+                manual_search_query or "NONE",
+            )
 
         response = VideoAnalysisResponse(
             video_filename=original_filename or video_path.name,
@@ -263,17 +316,91 @@ class VideoIssueAgent:
             description=classification.description,
             reasoning=classification.reasoning,
             confidence=classification.confidence,
-            primary_department=classification.primary_department,
-            secondary_departments=classification.secondary_departments,
+            primary_department=primary_department,
+            secondary_departments=secondary_departments,
             recommended_actions=classification.recommended_actions,
-            manual_search_query=classification.manual_search_query,
+            manual_search_query=manual_search_query,
             manual_matches=manual_matches,
             manual_index=manual_index,
             sampled_frames=frames,
             analyzed_at=datetime.now(timezone.utc).isoformat(),
         )
         self._write_trace(response)
+        logger.info(
+            "[%s] analysis.finished flagged=%s primary_department=%s manual_matches=%d",
+            analysis_label,
+            response.flagged,
+            response.primary_department,
+            len(response.manual_matches),
+        )
         return response
+
+    def route_departments_from_manual(
+        self,
+        classification: IncidentClassification,
+    ) -> tuple[str, list[str], list[ManualMatch], ManualIndexResult | None, str | None]:
+        structured_matches = self._structured_manual_matches(classification.incident_type)
+        if structured_matches:
+            best_match = structured_matches[0]
+            primary_department = _extract_primary_department(best_match)
+            secondary_departments = _extract_secondary_departments(best_match)
+            logger.info(
+                "manual_routing.structured_match incident_type=%s primary_department=%s source_id=%s",
+                classification.incident_type,
+                primary_department,
+                best_match.id,
+            )
+            return (
+                primary_department,
+                secondary_departments,
+                structured_matches,
+                None,
+                f"incident_type:{classification.incident_type}",
+            )
+
+        logger.info(
+            "manual_routing.structured_match_missing incident_type=%s falling_back_to_vector_search=true",
+            classification.incident_type,
+        )
+        manual_search_query = self._build_manual_search_query(classification)
+        manual_index = self.index_manuals()
+        if manual_index.docs_indexed == 0:
+            logger.info("manual_routing.vector_index_empty incident_type=%s", classification.incident_type)
+            return (
+                "Unassigned",
+                [],
+                [],
+                manual_index,
+                manual_search_query,
+            )
+
+        manual_matches = self.search_manuals(manual_search_query)
+        if not manual_matches:
+            logger.info("manual_routing.vector_no_matches query=%s", manual_search_query)
+            return (
+                "Unassigned",
+                [],
+                [],
+                manual_index,
+                manual_search_query,
+            )
+
+        best_match = manual_matches[0]
+        primary_department = _extract_primary_department(best_match)
+        secondary_departments = _extract_secondary_departments(best_match)
+        logger.info(
+            "manual_routing.vector_match incident_type=%s primary_department=%s source_id=%s",
+            classification.incident_type,
+            primary_department,
+            best_match.id,
+        )
+        return (
+            primary_department,
+            secondary_departments,
+            manual_matches,
+            manual_index,
+            manual_search_query,
+        )
 
     def index_manuals(self, *, reset: bool = False) -> ManualIndexResult:
         if self.chunk_overlap >= self.chunk_size:
@@ -285,12 +412,24 @@ class VideoIssueAgent:
         documents = self._list_manual_documents()
         signature = self._compute_signature(documents)
         existing_manifest = self._read_manifest(manifest_path)
+        logger.info(
+            "manual_index.started docs_found=%d reset=%s collection=%s",
+            len(documents),
+            reset,
+            self.collection_name,
+        )
 
         if (
             not reset
             and existing_manifest
             and existing_manifest.get("signature") == signature
         ):
+            logger.info(
+                "manual_index.cache_hit docs_indexed=%s chunks_indexed=%s manifest=%s",
+                existing_manifest["docs_indexed"],
+                existing_manifest["chunks_indexed"],
+                existing_manifest["manifest_path"],
+            )
             return ManualIndexResult(
                 collection_name=existing_manifest["collection_name"],
                 docs_directory=existing_manifest["docs_directory"],
@@ -338,6 +477,12 @@ class VideoIssueAgent:
             "supported_extensions": list(SUPPORTED_MANUAL_EXTENSIONS),
         }
         manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        logger.info(
+            "manual_index.completed docs_indexed=%d chunks_indexed=%d manifest=%s",
+            docs_indexed,
+            len(chunks),
+            manifest_path,
+        )
 
         return ManualIndexResult(
             collection_name=self.collection_name,
@@ -353,8 +498,14 @@ class VideoIssueAgent:
         if not query.strip():
             return []
 
+        logger.info(
+            "manual_search.started top_k=%d query=%s",
+            top_k,
+            query,
+        )
         _document_store, query_store = self._create_vector_stores()
         results = query_store.search(query, top_k=top_k)
+        logger.info("manual_search.results count=%d", len(results))
         return [
             ManualMatch(
                 id=result.id,
@@ -365,6 +516,100 @@ class VideoIssueAgent:
             )
             for result in results
         ]
+
+    def _structured_manual_matches(self, incident_type: str) -> list[ManualMatch]:
+        route_entries = sorted(
+            self.manual_routes.get(incident_type, []),
+            key=lambda entry: (_manual_doc_type_priority(entry.doc_type), entry.id),
+        )
+        return [
+            ManualMatch(
+                id=entry.id,
+                distance=0.0,
+                content=entry.content,
+                document=entry.source_document,
+                metadata=_sanitize_metadata(entry.metadata),
+            )
+            for entry in route_entries
+        ]
+
+    def _load_manual_routes(self) -> dict[str, list[ManualRouteEntry]]:
+        routes: dict[str, list[ManualRouteEntry]] = {}
+        for jsonl_path in sorted(self.manual_docs_dir.rglob("*.jsonl")):
+            relative_path = jsonl_path.relative_to(self.manual_docs_dir)
+            with jsonl_path.open("r", encoding="utf-8") as handle:
+                for line_number, raw_line in enumerate(handle, start=1):
+                    line = raw_line.strip()
+                    if not line:
+                        continue
+                    payload = json.loads(line)
+                    if not isinstance(payload, dict):
+                        continue
+
+                    metadata = payload.get("metadata") or {}
+                    if not isinstance(metadata, dict):
+                        continue
+
+                    incident_type = _normalize_incident_type(metadata.get("incident_type"))
+                    if not incident_type:
+                        continue
+
+                    content = (
+                        payload.get("content")
+                        or payload.get("text")
+                        or payload.get("document")
+                    )
+                    if not isinstance(content, str) or not content.strip():
+                        continue
+
+                    primary_department = _extract_department_line(content, "Primary Department")
+                    if not primary_department:
+                        metadata_primary = metadata.get("primary_department")
+                        if isinstance(metadata_primary, str) and metadata_primary.strip():
+                            primary_department = _humanize_department_name(metadata_primary)
+                    if not primary_department:
+                        continue
+
+                    secondary_departments = _extract_department_list_line(
+                        content,
+                        "Secondary Departments",
+                    )
+                    entry = ManualRouteEntry(
+                        id=str(payload.get("id") or f"{relative_path}:{line_number}"),
+                        doc_type=str(metadata.get("doc_type") or "manual"),
+                        incident_type=incident_type,
+                        primary_department=primary_department,
+                        secondary_departments=secondary_departments,
+                        content=content,
+                        source_document=str(relative_path),
+                        metadata={
+                            **metadata,
+                            "source_path": str(relative_path),
+                            "line_number": line_number,
+                            "primary_department": primary_department,
+                            "secondary_departments": ", ".join(secondary_departments)
+                            if secondary_departments
+                            else "NONE",
+                        },
+                    )
+                    routes.setdefault(incident_type, []).append(entry)
+
+        logger.info(
+            "manual_routing.loaded incident_types=%d route_entries=%d",
+            len(routes),
+            sum(len(entries) for entries in routes.values()),
+        )
+        return routes
+
+    def _build_manual_search_query(self, classification: IncidentClassification) -> str:
+        return " | ".join(
+            [
+                f"Incident Type: {classification.incident_type}",
+                f"Severity: {classification.severity}",
+                classification.summary,
+                classification.description,
+            ]
+        )
 
     def _classify_frames(
         self,
@@ -415,18 +660,8 @@ class VideoIssueAgent:
                 "Choose incident_type from: "
                 + ", ".join(INCIDENT_TYPES)
                 + ".",
-                "Use departments and actions that are operationally concise.",
-                "If flagged=false, manual_search_query must be null, and recommended_actions should focus on monitoring or no action.",
-                "If flagged=true, manual_search_query should be a short semantic query for the manual corpus.",
-                "",
-                "Available department names to prefer when relevant:",
-                "- Security Team",
-                "- Security Monitoring Team",
-                "- Fire Department",
-                "- Medical Response Team",
-                "- Emergency Services",
-                "- Facility Management",
-                "- Local Police Department",
+                "Do not choose departments or responders. Department routing is handled separately by manual retrieval.",
+                "Recommended actions should stay generic and operational. Do not name specific departments in the actions.",
                 "",
                 "Incident metadata:",
                 json.dumps(
@@ -451,6 +686,13 @@ class VideoIssueAgent:
         total_frames = int(capture.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
         fps = capture.get(cv2.CAP_PROP_FPS) or 0.0
         frame_positions = self._sample_frame_positions(total_frames)
+        logger.info(
+            "frames.sampling video=%s total_frames=%d fps=%.2f target_samples=%d",
+            video_path.name,
+            total_frames,
+            fps,
+            len(frame_positions),
+        )
 
         frames: list[FrameSample] = []
         parts: list[genai_types.Part | str] = []
@@ -654,6 +896,7 @@ class VideoIssueAgent:
             json.dumps(response.model_dump(mode="json"), indent=2),
             encoding="utf-8",
         )
+        logger.info("analysis.trace_written path=%s", trace_path)
 
 
 def _stable_chunk_id(relative_path: Path, chunk_index: int) -> str:
@@ -714,3 +957,89 @@ def _read_boolean_env(name: str, fallback: bool) -> bool:
     if raw in {"0", "false", "no", "off"}:
         return False
     raise AgentConfigurationError(f"{name} must be a boolean value.")
+
+
+def _analysis_label(
+    *,
+    original_filename: str,
+    incident_id: str | None,
+    camera_id: str | None,
+) -> str:
+    parts = []
+    if incident_id:
+        parts.append(f"incident={incident_id}")
+    if camera_id:
+        parts.append(f"camera={camera_id}")
+    parts.append(f"file={original_filename}")
+    return " ".join(parts)
+
+
+def _normalize_incident_type(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip().upper()
+    if not normalized:
+        return None
+    aliases = {
+        "THEFT_ROBBERY": "THEFT_OR_ROBBERY",
+        "VIOLENCE_ASSAULT": "VIOLENCE_OR_ASSAULT",
+    }
+    return aliases.get(normalized, normalized)
+
+
+def _manual_doc_type_priority(doc_type: str) -> int:
+    return {
+        "routing": 0,
+        "playbook": 1,
+        "vision_mapping": 2,
+        "manual": 3,
+    }.get(doc_type, 9)
+
+
+def _extract_department_line(text: str, label: str) -> str | None:
+    for line in text.splitlines():
+        if line.lower().startswith(f"{label.lower()}:"):
+            value = line.split(":", 1)[1].strip()
+            if value and value.upper() != "NONE":
+                return value
+    return None
+
+
+def _extract_department_list_line(text: str, label: str) -> list[str]:
+    value = _extract_department_line(text, label)
+    if not value:
+        return []
+    departments = [
+        segment.strip()
+        for segment in value.split(",")
+        if segment.strip() and segment.strip().upper() != "NONE"
+    ]
+    return departments
+
+
+def _humanize_department_name(value: str) -> str:
+    return value.replace("_", " ").title()
+
+
+def _extract_primary_department(match: ManualMatch) -> str:
+    metadata_primary = match.metadata.get("primary_department")
+    if isinstance(metadata_primary, str) and metadata_primary.strip():
+        return metadata_primary
+
+    parsed_primary = _extract_department_line(match.content, "Primary Department")
+    if parsed_primary:
+        return parsed_primary
+
+    return "Unassigned"
+
+
+def _extract_secondary_departments(match: ManualMatch) -> list[str]:
+    metadata_value = match.metadata.get("secondary_departments")
+    if isinstance(metadata_value, str) and metadata_value.strip() and metadata_value.upper() != "NONE":
+        return [
+            segment.strip()
+            for segment in metadata_value.split(",")
+            if segment.strip() and segment.strip().upper() != "NONE"
+        ]
+
+    return _extract_department_list_line(match.content, "Secondary Departments")
