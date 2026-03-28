@@ -10,15 +10,10 @@ function App() {
 
   return (
     <AppShell active={page} onNavigate={setPage}>
-      {page === 'issues' ? (
-        <IssueDashboard />
-      ) : page === 'vid-analysis' ? (
-        <GetVidAnalysisPage />
-      ) : page === 'phone-calls' ? (
-        <CallPhonesPage />
-      ) : (
-        <SettingsPage />
-      )}
+      {page === 'issues' ? <IssueDashboard /> : null}
+      {page === 'analysis' ? <GetVidAnalysisPage /> : null}
+      {page === 'phone-calls' ? <CallPhonesPage /> : null}
+      {page === 'settings' ? <SettingsPage /> : null}
     </AppShell>
   )
 }

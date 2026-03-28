@@ -1,95 +1,130 @@
 import { useCallback, useEffect, useState } from 'react'
-import type { Issue, IssueStatus, SecurityManualDock } from '../types'
 import { issues as seedIssues } from '../data/issues'
+import type { Issue, IssueStatus, SecurityManualDock } from '../types'
 
 const STORAGE_KEY = 'respondo-issues'
 
-const seedById = new Map(seedIssues.map((i) => [i.id, i]))
+const seedById = new Map(seedIssues.map((issue) => [issue.id, issue]))
 
 const DEFAULT_DOCK: SecurityManualDock = {
   section_trail: ['Security manual', 'Unindexed'],
   snippet:
-    'No security manual excerpt is on file for this issue. Ingest chunks from the vector index to populate routing guidance.',
+    'No security-manual excerpt is on file for this issue yet. Ingest vector chunks to populate department routing guidance.',
   contact_department: 'Operations',
 }
 
-function normalizeDock(raw: unknown, fallback: SecurityManualDock): SecurityManualDock {
+function normalizeDock(
+  raw: unknown,
+  fallback: SecurityManualDock,
+): SecurityManualDock {
   if (!raw || typeof raw !== 'object') return fallback
-  const d = raw as Record<string, unknown>
-  const trail = d.section_trail
+  const dock = raw as Record<string, unknown>
   return {
-    section_trail: Array.isArray(trail)
-      ? trail.filter((x): x is string => typeof x === 'string')
+    section_trail: Array.isArray(dock.section_trail)
+      ? dock.section_trail.filter((segment): segment is string => typeof segment === 'string')
       : fallback.section_trail,
-    snippet: typeof d.snippet === 'string' ? d.snippet : fallback.snippet,
+    snippet:
+      typeof dock.snippet === 'string' ? dock.snippet : fallback.snippet,
     contact_department:
-      typeof d.contact_department === 'string'
-        ? d.contact_department
+      typeof dock.contact_department === 'string'
+        ? dock.contact_department
         : fallback.contact_department,
   }
 }
 
 function normalizeIssue(raw: unknown): Issue | null {
   if (!raw || typeof raw !== 'object') return null
-  const r = raw as Partial<Issue> & { id?: string }
-  if (!r.id) return null
-  const seed = seedById.get(r.id)
+  const issue = raw as Partial<Issue> & { id?: string }
+  if (!issue.id) return null
+
+  const seed = seedById.get(issue.id)
   const dockFallback = seed?.security_manual_dock ?? DEFAULT_DOCK
+
   return {
-    id: r.id,
-    title: typeof r.title === 'string' ? r.title : (seed?.title ?? 'Untitled'),
-    date: typeof r.date === 'string' ? r.date : (seed?.date ?? ''),
-    time: typeof r.time === 'string' ? r.time : (seed?.time ?? ''),
+    id: issue.id,
+    title: typeof issue.title === 'string' ? issue.title : seed?.title ?? 'Untitled issue',
+    date: typeof issue.date === 'string' ? issue.date : seed?.date ?? '',
+    time: typeof issue.time === 'string' ? issue.time : seed?.time ?? '',
     description:
-      typeof r.description === 'string'
-        ? r.description
-        : (seed?.description ?? ''),
+      typeof issue.description === 'string'
+        ? issue.description
+        : seed?.description ?? '',
     status:
-      r.status === 'unresolved' ||
-      r.status === 'resolved' ||
-      r.status === 'incorrectly_classified'
-        ? r.status
-        : (seed?.status ?? 'unresolved'),
-    security_manual_dock: normalizeDock(r.security_manual_dock, dockFallback),
+      issue.status === 'unresolved' ||
+      issue.status === 'resolved' ||
+      issue.status === 'incorrectly_classified'
+        ? issue.status
+        : seed?.status ?? 'unresolved',
     reason_flagged:
-      typeof r.reason_flagged === 'string'
-        ? r.reason_flagged
-        : (seed?.reason_flagged ??
-          'Legacy record: agent flag reason was not stored.'),
+      typeof issue.reason_flagged === 'string'
+        ? issue.reason_flagged
+        : seed?.reason_flagged ?? 'No stored flag reason is available yet.',
+    security_manual_dock: normalizeDock(issue.security_manual_dock, dockFallback),
+    location: typeof issue.location === 'string' ? issue.location : seed?.location,
+    department:
+      typeof issue.department === 'string'
+        ? issue.department
+        : seed?.department,
+    classificationNote:
+      typeof issue.classificationNote === 'string'
+        ? issue.classificationNote
+        : seed?.classificationNote,
   }
 }
 
-function load(): Issue[] {
+function loadIssues(): Issue[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (!raw) return seedIssues
+
     const parsed = JSON.parse(raw) as unknown
     if (!Array.isArray(parsed)) return seedIssues
+
     const merged = parsed
       .map(normalizeIssue)
-      .filter((x): x is Issue => x !== null)
+      .filter((issue): issue is Issue => issue !== null)
+
     return merged.length > 0 ? merged : seedIssues
   } catch {
     return seedIssues
   }
 }
 
-function persist(issues: Issue[]) {
+function persistIssues(issues: Issue[]) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(issues))
 }
 
 export function useIssues() {
-  const [issues, setIssues] = useState<Issue[]>(() => load())
+  const [issues, setIssues] = useState<Issue[]>(() => loadIssues())
 
   useEffect(() => {
-    persist(issues)
+    persistIssues(issues)
   }, [issues])
 
-  const setStatus = useCallback((id: string, status: IssueStatus) => {
-    setIssues((prev) =>
-      prev.map((i) => (i.id === id ? { ...i, status } : i)),
-    )
+  const classifyIssue = useCallback(
+    (issueId: string, status: IssueStatus, classificationNote: string) => {
+      setIssues((current) =>
+        current.map((issue) =>
+          issue.id === issueId
+            ? {
+                ...issue,
+                status,
+                classificationNote: classificationNote.trim() || undefined,
+              }
+            : issue,
+        ),
+      )
+    },
+    [],
+  )
+
+  const addIssue = useCallback((issue: Issue) => {
+    setIssues((current) => [issue, ...current])
   }, [])
 
-  return { issues, setStatus }
+  return {
+    issues,
+    classifyIssue,
+    addIssue,
+  }
 }

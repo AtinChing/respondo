@@ -3,10 +3,6 @@ export type IssueStatus =
   | 'resolved'
   | 'incorrectly_classified'
 
-/**
- * One retrieved chunk from the security manual (vector store / recursive split).
- * The trail mirrors coarse→fine splits; the snippet is the leaf text that routes to a department.
- */
 export type SecurityManualDock = {
   section_trail: string[]
   snippet: string
@@ -21,8 +17,10 @@ export type Issue = {
   description: string
   status: IssueStatus
   security_manual_dock: SecurityManualDock
-  /** Why the video agent flagged this clip as an issue. */
   reason_flagged: string
+  location?: string
+  department?: string
+  classificationNote?: string
 }
 
 export type Member = {
@@ -35,4 +33,55 @@ export type Department = {
   id: string
   name: string
   members: Member[]
+}
+
+export type IssueChatMessage = {
+  id: string
+  role: 'assistant' | 'user'
+  content: string
+}
+
+export type ManualMatch = {
+  id: string
+  distance: number
+  content: string
+  document: string | null
+  metadata: Record<string, string | number | boolean | null>
+}
+
+export type ManualIndexResult = {
+  collection_name: string
+  docs_directory: string
+  docs_indexed: number
+  chunks_indexed: number
+  reindexed: boolean
+  manifest_path: string
+  supported_extensions: string[]
+}
+
+export type VideoAnalysisFrame = {
+  timestamp_seconds: number
+  frame_index: number
+}
+
+export type VideoAnalysisResult = {
+  video_filename: string | null
+  incident_id: string | null
+  camera_id: string | null
+  analysis_mode: 'gemini'
+  flagged: boolean
+  incident_type: string
+  severity: 'LOW' | 'MEDIUM' | 'HIGH'
+  summary: string
+  description: string
+  reasoning: string
+  confidence: number
+  primary_department: string
+  secondary_departments: string[]
+  recommended_actions: string[]
+  manual_search_query: string | null
+  manual_matches: ManualMatch[]
+  manual_index: ManualIndexResult | null
+  sampled_frames: VideoAnalysisFrame[]
+  analyzed_at: string
 }

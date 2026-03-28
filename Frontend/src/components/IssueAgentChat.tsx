@@ -1,163 +1,124 @@
-/**
- * Chat UI using the same Vercel AI SDK + HTTP streaming pattern described in
- * ASSISTANT_UI_DOCS.md (Thread + Composer layout). Transport: DefaultChatTransport → POST /api/chat.
- * Presentation follows Gemini-style chat (soft shell, rounded bubbles); model is fixed on the server.
- */
-import { useChat } from '@ai-sdk/react'
-import { DefaultChatTransport } from 'ai'
-import { useEffect, useMemo, useRef } from 'react'
-import type { Issue } from '../types'
-
-function messageText(parts: { type: string; text?: string }[]): string {
-  return parts
-    .filter((p): p is { type: 'text'; text: string } => p.type === 'text')
-    .map((p) => p.text)
-    .join('')
-}
+import { useMemo, useState } from 'react'
+import type { Issue, IssueChatMessage } from '../types'
 
 type IssueAgentChatProps = {
-  issue: Issue
-  onClose: () => void
+  issue: Issue | null
 }
 
-export function IssueAgentChat({ issue, onClose }: IssueAgentChatProps) {
-  const issueBody = useMemo(
-    () => ({
-      issueId: issue.id,
-      title: issue.title,
-      date: issue.date,
-      time: issue.time,
-      description: issue.description,
-      status: issue.status,
-      reason_flagged: issue.reason_flagged,
-      security_manual_dock: {
-        section_trail: issue.security_manual_dock.section_trail,
-        snippet: issue.security_manual_dock.snippet,
-        contact_department: issue.security_manual_dock.contact_department,
+function buildAssistantReply(issue: Issue, prompt: string) {
+  const normalized = prompt.toLowerCase()
+
+  if (
+    normalized.includes('manual') ||
+    normalized.includes('department') ||
+    normalized.includes('who')
+  ) {
+    return `The current manual route points to ${issue.security_manual_dock.contact_department}. Section trail: ${issue.security_manual_dock.section_trail.join(' > ')}.`
+  }
+
+  if (normalized.includes('flag') || normalized.includes('why')) {
+    return `The clip was flagged because: ${issue.reason_flagged}`
+  }
+
+  if (normalized.includes('escalat')) {
+    return `Recommended escalation for "${issue.title}": preserve the footage, confirm the timeline, and notify ${issue.security_manual_dock.contact_department} for the first on-site response.`
+  }
+
+  if (normalized.includes('summary') || normalized.includes('brief')) {
+    return `Summary: ${issue.description}`
+  }
+
+  return `For "${issue.title}", I would preserve the video evidence, confirm the timeline, keep the issue ${issue.status.replaceAll('_', ' ')}, and use the manual dock note as the starting point for the human handoff.`
+}
+
+export function IssueAgentChat({ issue }: IssueAgentChatProps) {
+  const [draft, setDraft] = useState('')
+  const [messages, setMessages] = useState<IssueChatMessage[]>([])
+
+  const seededMessages = useMemo<IssueChatMessage[]>(() => {
+    if (!issue) return []
+    return [
+      {
+        id: `${issue.id}-intro`,
+        role: 'assistant',
+        content:
+          'Issue agent ready. Ask for a summary, why it was flagged, or which department the current manual route recommends.',
       },
-    }),
-    [issue],
-  )
+    ]
+  }, [issue])
 
-  const transport = useMemo(
-    () =>
-      new DefaultChatTransport({
-        api: '/api/chat',
-        body: { issueContext: issueBody },
-      }),
-    [issueBody],
-  )
+  if (!issue) {
+    return (
+      <section className="chat-panel">
+        <div className="chat-empty">
+          <h2 className="panel-title">Issue agent chat</h2>
+          <p>Select an issue to open the chat assistant scaffold.</p>
+        </div>
+      </section>
+    )
+  }
 
-  const { messages, sendMessage, status, error, stop } = useChat({
-    id: `issue-chat-${issue.id}`,
-    transport,
-  })
-
-  const viewportRef = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    const el = viewportRef.current
-    if (!el) return
-    el.scrollTop = el.scrollHeight
-  }, [messages, status])
-
-  const busy = status === 'streaming' || status === 'submitted'
+  const allMessages = [...seededMessages, ...messages]
 
   return (
-    <div className="gemini-chat-backdrop" role="presentation" onClick={onClose}>
-      <aside
-        className="gemini-chat-panel"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="gemini-chat-title"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <header className="gemini-chat-header">
-          <div className="gemini-chat-header-text">
-            <h2 id="gemini-chat-title" className="gemini-chat-title">
-              Incident agent
-            </h2>
-            <p className="gemini-chat-subtitle">{issue.title}</p>
-          </div>
-          <button
-            type="button"
-            className="gemini-chat-close"
-            onClick={onClose}
-            aria-label="Close chat"
-          >
-            ×
-          </button>
-        </header>
-
-        <div className="gemini-chat-thread" ref={viewportRef}>
-          {messages.length === 0 && (
-            <p className="gemini-chat-empty">
-              Ask about this incident, next steps, or how to document it. Replies stream from the
-              server; the model is fixed and not selectable here.
-            </p>
-          )}
-          {messages.map((m) => {
-            if (m.role !== 'user' && m.role !== 'assistant') return null
-            const text = messageText(m.parts)
-            if (!text.trim()) return null
-            return (
-              <div
-                key={m.id}
-                className={`gemini-msg gemini-msg--${m.role}`}
-              >
-                <span className="gemini-msg-label">
-                  {m.role === 'user' ? 'You' : 'Agent'}
-                </span>
-                <div className="gemini-msg-bubble">{text}</div>
-              </div>
-            )
-          })}
+    <section className="chat-panel" aria-labelledby="issue-chat-heading">
+      <div className="chat-header">
+        <div>
+          <p className="panel-eyebrow">Assistant UI scaffold</p>
+          <h2 id="issue-chat-heading" className="panel-title">
+            {issue.title}
+          </h2>
         </div>
+        <span className="shell-pill">Issue agent</span>
+      </div>
 
-        {error && (
-          <p className="gemini-chat-error" role="alert">
-            {error.message}
-          </p>
-        )}
-
-        <footer className="gemini-composer-wrap">
-          <form
-            className="gemini-composer"
-            onSubmit={async (e) => {
-              e.preventDefault()
-              const form = e.currentTarget
-              const fd = new FormData(form)
-              const text = String(fd.get('message') ?? '').trim()
-              if (!text || busy) return
-              form.reset()
-              await sendMessage({ text })
-            }}
+      <div className="chat-thread">
+        {allMessages.map((message) => (
+          <article
+            key={message.id}
+            className={`chat-bubble chat-bubble--${message.role}`}
           >
-            <textarea
-              name="message"
-              className="gemini-composer-input"
-              placeholder="Message incident agent…"
-              rows={1}
-              disabled={busy}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && !e.shiftKey) {
-                  e.preventDefault()
-                  e.currentTarget.form?.requestSubmit()
-                }
-              }}
-            />
-            {busy ? (
-              <button type="button" className="gemini-composer-send" onClick={() => stop()}>
-                Stop
-              </button>
-            ) : (
-              <button type="submit" className="gemini-composer-send">
-                Send
-              </button>
-            )}
-          </form>
-        </footer>
-      </aside>
-    </div>
+            <p className="chat-role">
+              {message.role === 'assistant' ? 'Assistant' : 'You'}
+            </p>
+            <p>{message.content}</p>
+          </article>
+        ))}
+      </div>
+
+      <form
+        className="chat-composer"
+        onSubmit={(event) => {
+          event.preventDefault()
+          const prompt = draft.trim()
+          if (!prompt) return
+
+          setMessages((current) => [
+            ...current,
+            {
+              id: crypto.randomUUID(),
+              role: 'user',
+              content: prompt,
+            },
+            {
+              id: crypto.randomUUID(),
+              role: 'assistant',
+              content: buildAssistantReply(issue, prompt),
+            },
+          ])
+          setDraft('')
+        }}
+      >
+        <input
+          className="input"
+          placeholder="Ask for a summary, why it was flagged, or who to notify"
+          value={draft}
+          onChange={(event) => setDraft(event.target.value)}
+        />
+        <button type="submit" className="btn btn--primary">
+          Send
+        </button>
+      </form>
+    </section>
   )
 }
