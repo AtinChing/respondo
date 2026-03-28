@@ -3,6 +3,7 @@ Railtracks agent: turns full incident context into a shareable Markdown issue re
 Context is supplied as multiple string segments (joined before the LLM call).
 """
 
+import os
 import uuid
 
 import railtracks as rt
@@ -11,8 +12,10 @@ from pydantic import BaseModel, Field
 
 load_dotenv()
 
+_GEMINI_MODEL = (os.getenv("GEMINI_MODEL") or "gemini-2.5-flash").strip()
+
 ReportGenerationAgent = rt.agent_node(
-    llm=rt.llm.OpenAILLM("gpt-4o-mini"),
+    llm=rt.llm.GeminiLLM(_GEMINI_MODEL),
     system_message=(
         "You are the Report generation agent for Respondo operations. "
         "Staff will send one or more text sections describing a single security or facilities incident "

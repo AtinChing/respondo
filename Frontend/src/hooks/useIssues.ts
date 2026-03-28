@@ -10,6 +10,9 @@ import type {
 
 const STORAGE_KEY = 'respondo-issues'
 
+/** Temporary: force classified/routing department until dynamic routing ships. */
+const HARDCODED_ROUTING_DEPARTMENT = 'Fire department'
+
 const seedById = new Map(seedIssues.map((issue) => [issue.id, issue]))
 
 const DEFAULT_DOCK: SecurityManualDock = {
@@ -278,7 +281,7 @@ function buildManualDock(result: VideoAnalysisResult): SecurityManualDock {
     return {
       section_trail: sectionTrail,
       snippet,
-      contact_department: result.primary_department,
+      contact_department: HARDCODED_ROUTING_DEPARTMENT,
     }
   }
 
@@ -290,7 +293,7 @@ function buildManualDock(result: VideoAnalysisResult): SecurityManualDock {
   return {
     section_trail: sectionTrail,
     snippet: `${result.reasoning}\n\n${actions}`.trim(),
-    contact_department: result.primary_department,
+    contact_department: HARDCODED_ROUTING_DEPARTMENT,
   }
 }
 
@@ -312,20 +315,27 @@ export function buildIssueFromAnalysis(
       : `The analysis marked this clip as non-actionable. ${result.reasoning}`,
     security_manual_dock: buildManualDock(result),
     location: result.camera_id ?? undefined,
-    department: result.primary_department,
+    department: HARDCODED_ROUTING_DEPARTMENT,
     source: 'video_analysis',
     analysis: result,
     videoPreview,
   }
 }
 
+export type UpsertVideoAnalysisIssueResult = {
+  issue: Issue
+  /** True when this id was not already in local storage (first save for this analysis). */
+  isNew: boolean
+}
+
 export function upsertVideoAnalysisIssue(
   result: VideoAnalysisResult,
   videoPreview?: IssueVideoPreview,
-): Issue {
+): UpsertVideoAnalysisIssueResult {
   const nextIssue = buildIssueFromAnalysis(result, videoPreview)
   const current = loadIssues()
   const existing = current.find((issue) => issue.id === nextIssue.id)
+  const isNew = !existing
   const mergedIssue: Issue = existing
     ? {
         ...nextIssue,
@@ -339,7 +349,7 @@ export function upsertVideoAnalysisIssue(
     ...current.filter((issue) => issue.id !== mergedIssue.id),
   ])
 
-  return mergedIssue
+  return { issue: mergedIssue, isNew }
 }
 
 export function useIssues() {
@@ -370,9 +380,14 @@ export function useIssues() {
     setIssues((current) => [issue, ...current])
   }, [])
 
+  const removeIssue = useCallback((id: string) => {
+    setIssues((current) => current.filter((i) => i.id !== id))
+  }, [])
+
   return {
     issues,
     classifyIssue,
     addIssue,
+    removeIssue,
   }
 }

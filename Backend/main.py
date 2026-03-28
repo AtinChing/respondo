@@ -57,12 +57,19 @@ async def health() -> dict[str, bool]:
     return {"ok": True}
 
 
+def _gemini_api_key_configured() -> bool:
+    return bool(
+        os.environ.get("GEMINI_API_KEY", "").strip()
+        or os.environ.get("GOOGLE_API_KEY", "").strip()
+    )
+
+
 @app.post("/api/generate-issue-report", response_model=GenerateIssueReportResponse)
 async def generate_issue_report_endpoint(body: GenerateIssueReportRequest):
-    if not os.environ.get("OPENAI_API_KEY", "").strip():
+    if not _gemini_api_key_configured():
         raise HTTPException(
             status_code=503,
-            detail="OPENAI_API_KEY is not set on the server",
+            detail="GEMINI_API_KEY (or GOOGLE_API_KEY) is not set on the server",
         )
     try:
         return await generate_issue_report_api(body)

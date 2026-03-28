@@ -13,6 +13,7 @@ The backend is centered around `Backend/main.py`, which exposes:
 
 - `GET /health`
 - `POST /api/analyze-video`
+- `POST /api/generate-issue-report` (Markdown reports via Railtracks + **Gemini**, same `GEMINI_API_KEY` / `GOOGLE_API_KEY` as video analysis)
 
 `Backend/video_agent.py` handles:
 

@@ -1,5 +1,7 @@
 import { useId, useState } from 'react'
+import { useDepartments } from '../hooks/useDepartments'
 import { upsertVideoAnalysisIssue } from '../hooks/useIssues'
+import { notifyDepartmentMembersForIssue } from '../lib/issueDepartmentNotify'
 import type { Issue, IssueVideoPreview, VideoAnalysisResult } from '../types'
 
 const API_BASE_URL =
@@ -52,6 +54,7 @@ function readVideoPreview(file: File): Promise<IssueVideoPreview> {
 
 export function GetVidAnalysisPage() {
   const inputId = useId()
+  const { departments } = useDepartments()
   const [file, setFile] = useState<File | null>(null)
   const [incidentId, setIncidentId] = useState('')
   const [cameraId, setCameraId] = useState('')
@@ -60,6 +63,10 @@ export function GetVidAnalysisPage() {
   const [result, setResult] = useState<VideoAnalysisResult | null>(null)
   const [savedIssue, setSavedIssue] = useState<Issue | null>(null)
   const [saveError, setSaveError] = useState<string | null>(null)
+  const [deptCallBanner, setDeptCallBanner] = useState<{
+    text: string
+    error?: boolean
+  } | null>(null)
 
   return (
     <div className="page">
@@ -90,6 +97,7 @@ export function GetVidAnalysisPage() {
             setError(null)
             setSaveError(null)
             setSavedIssue(null)
+            setDeptCallBanner(null)
 
             try {
               const response = await fetch(buildEndpoint(API_BASE_URL), {
@@ -110,17 +118,53 @@ export function GetVidAnalysisPage() {
               const analysisResult = payload as VideoAnalysisResult
               setResult(analysisResult)
 
+              const runDeptOutbound = async (issue: Issue, isNew: boolean) => {
+                if (!isNew || issue.status !== 'unresolved') return
+                const notify = await notifyDepartmentMembersForIssue(
+                  issue,
+                  departments,
+                )
+                if (notify.skippedReason) {
+                  setDeptCallBanner({ text: notify.skippedReason })
+                  return
+                }
+                if (notify.calledNumbers.length > 0) {
+                  const extra =
+                    notify.errors.length > 0
+                      ? ` ${notify.errors.join(' ')}`
+                      : ''
+                  setDeptCallBanner({
+                    text: `Outbound call started for ${notify.calledNumbers.join(', ')} (Issue dashboard notification).${extra}`,
+                  })
+                  return
+                }
+                setDeptCallBanner({
+                  text:
+                    notify.errors.join(' ') ||
+                    'Could not start department outbound call.',
+                  error: true,
+                })
+              }
+
               try {
                 const videoPreview = await readVideoPreview(file)
-                setSavedIssue(upsertVideoAnalysisIssue(analysisResult, videoPreview))
+                const { issue, isNew } = upsertVideoAnalysisIssue(
+                  analysisResult,
+                  videoPreview,
+                )
+                setSavedIssue(issue)
+                await runDeptOutbound(issue, isNew)
               } catch (storageError) {
                 try {
-                  setSavedIssue(upsertVideoAnalysisIssue(analysisResult))
+                  const { issue, isNew } =
+                    upsertVideoAnalysisIssue(analysisResult)
+                  setSavedIssue(issue)
                   setSaveError(
                     storageError instanceof Error
                       ? `Issue saved, but the original video could not be stored for dashboard playback: ${storageError.message}`
                       : 'Issue saved, but the original video could not be stored for dashboard playback.',
                   )
+                  await runDeptOutbound(issue, isNew)
                 } catch (fallbackStorageError) {
                   setSavedIssue(null)
                   setSaveError(
@@ -191,6 +235,15 @@ export function GetVidAnalysisPage() {
 
           {error ? <p className="inline-error">{error}</p> : null}
           {saveError ? <p className="inline-error">{saveError}</p> : null}
+          {deptCallBanner ? (
+            <p
+              className={
+                deptCallBanner.error ? 'inline-error' : 'field-value'
+              }
+            >
+              {deptCallBanner.text}
+            </p>
+          ) : null}
           {savedIssue ? (
             <p className="field-value">
               Saved to the issue dashboard as <strong>{savedIssue.title}</strong>.

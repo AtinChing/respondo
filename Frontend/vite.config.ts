@@ -1,6 +1,6 @@
 import react from '@vitejs/plugin-react'
+import { createGoogleGenerativeAI } from '@ai-sdk/google'
 import { convertToModelMessages, stepCountIs, streamText, tool, type UIMessage } from 'ai'
-import { createOpenAI } from '@ai-sdk/openai'
 import { z } from 'zod'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import {
@@ -165,11 +165,20 @@ function attachChatApiMiddleware(server: ViteDevServer | PreviewServer, mode: st
       }
 
       const env = loadEnv(mode, process.cwd(), '')
-      const apiKey = env.OPENAI_API_KEY
-      if (!apiKey?.trim()) {
+      const apiKey =
+        env.GEMINI_API_KEY?.trim() ||
+        env.GOOGLE_GENERATIVE_AI_API_KEY?.trim() ||
+        env.GOOGLE_API_KEY?.trim() ||
+        ''
+      if (!apiKey) {
         res.statusCode = 503
         res.setHeader('Content-Type', 'application/json')
-        res.end(JSON.stringify({ error: 'OPENAI_API_KEY is not set in .env.local' }))
+        res.end(
+          JSON.stringify({
+            error:
+              'Set GEMINI_API_KEY (or GOOGLE_GENERATIVE_AI_API_KEY) in Frontend/.env.local for dev chat.',
+          }),
+        )
         return
       }
 
@@ -223,7 +232,8 @@ function attachChatApiMiddleware(server: ViteDevServer | PreviewServer, mode: st
             ? `${baseSystem}\n\n${incidentBlock}${toolHint}`.trim()
             : baseSystem
 
-      const openaiProvider = createOpenAI({ apiKey })
+      const google = createGoogleGenerativeAI({ apiKey })
+      const chatModel = (env.GEMINI_MODEL ?? 'gemini-2.5-flash').trim() || 'gemini-2.5-flash'
 
       const pyBase = (env.RESPONDO_PY_API_URL ?? 'http://127.0.0.1:8000').replace(/\/$/, '')
 
@@ -272,7 +282,7 @@ function attachChatApiMiddleware(server: ViteDevServer | PreviewServer, mode: st
       try {
         const modelMessages = await convertToModelMessages(messages)
         const result = streamText({
-          model: openaiProvider('gpt-4o-mini'),
+          model: google(chatModel),
           system,
           messages: modelMessages,
           tools,

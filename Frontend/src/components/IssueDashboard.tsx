@@ -22,34 +22,55 @@ function IssueCard({
   issue,
   onOpenChat,
   onOpenClassify,
+  onDelete,
 }: {
   issue: Issue
   onOpenChat: (issue: Issue) => void
   onOpenClassify: (issue: Issue) => void
+  onDelete: (id: string) => void
 }) {
   const [open, setOpen] = useState(false)
 
   return (
     <article className={`issue-card${open ? ' issue-card--open' : ''}`}>
-      <button
-        type="button"
-        className="issue-card-header"
-        onClick={() => setOpen((value) => !value)}
-        aria-expanded={open}
-      >
-        <div className="issue-card-header-main">
-          <h2 className="issue-card-title">{issue.title}</h2>
-          <div className="issue-card-meta">
-            <time dateTime={`${issue.date}T${issue.time}`}>
-              {issue.date} · {issue.time}
-            </time>
+      <div className="issue-card-top">
+        <button
+          type="button"
+          className="issue-card-header"
+          onClick={() => setOpen((value) => !value)}
+          aria-expanded={open}
+        >
+          <div className="issue-card-header-main">
+            <h2 className="issue-card-title">{issue.title}</h2>
+            <div className="issue-card-meta">
+              <time dateTime={`${issue.date}T${issue.time}`}>
+                {issue.date} · {issue.time}
+              </time>
+            </div>
           </div>
-        </div>
-        <StatusTag status={issue.status} />
-        <span className="issue-card-chevron" aria-hidden>
-          {open ? '▾' : '▸'}
-        </span>
-      </button>
+          <StatusTag status={issue.status} />
+          <span className="issue-card-chevron" aria-hidden>
+            {open ? '▾' : '▸'}
+          </span>
+        </button>
+        <button
+          type="button"
+          className="issue-card-delete"
+          aria-label={`Delete issue: ${issue.title}`}
+          onClick={(e) => {
+            e.stopPropagation()
+            if (
+              window.confirm(
+                `Remove this issue from the dashboard?\n\n${issue.title}`,
+              )
+            ) {
+              onDelete(issue.id)
+            }
+          }}
+        >
+          Delete
+        </button>
+      </div>
 
       {open ? (
         <div className="issue-card-body">
@@ -138,9 +159,15 @@ function IssueCard({
 }
 
 export function IssueDashboard() {
-  const { issues, classifyIssue } = useIssues()
+  const { issues, classifyIssue, removeIssue } = useIssues()
   const [classifyingIssue, setClassifyingIssue] = useState<Issue | null>(null)
   const [chatIssue, setChatIssue] = useState<Issue | null>(null)
+
+  const handleDelete = (id: string) => {
+    removeIssue(id)
+    setChatIssue((current) => (current?.id === id ? null : current))
+    setClassifyingIssue((current) => (current?.id === id ? null : current))
+  }
 
   return (
     <div className="page">
@@ -160,6 +187,7 @@ export function IssueDashboard() {
                 issue={issue}
                 onOpenChat={setChatIssue}
                 onOpenClassify={setClassifyingIssue}
+                onDelete={handleDelete}
               />
             </div>
           ))}
