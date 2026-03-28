@@ -1,7 +1,11 @@
-import { useCallback, useId, useState } from 'react'
+import { useId, useState } from 'react'
+import { upsertVideoAnalysisIssue } from '../hooks/useIssues'
+import type { Issue, IssueVideoPreview, VideoAnalysisResult } from '../types'
 
-const VIDEO_API_BASE =
-  import.meta.env.VITE_VIDEO_API_URL?.replace(/\/$/, '') ?? '/api/py'
+const API_BASE_URL =
+  import.meta.env.VITE_API_BASE_URL?.trim() ||
+  import.meta.env.VITE_VIDEO_API_URL?.replace(/\/$/, '') ||
+  'http://localhost:8000'
 
 function formatApiDetail(detail: unknown): string {
   if (typeof detail === 'string') return detail
@@ -14,151 +18,257 @@ function formatApiDetail(detail: unknown): string {
       )
       .join(' ')
   }
-  return 'Request failed'
+  return 'Backend request failed.'
+}
+
+function buildEndpoint(baseUrl: string) {
+  const trimmed = baseUrl.replace(/\/$/, '')
+  return trimmed.endsWith('/api/py')
+    ? `${trimmed}/api/analyze-video`
+    : `${trimmed}/api/analyze-video`
+}
+
+function readVideoPreview(file: File): Promise<IssueVideoPreview> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onerror = () => {
+      reject(new Error(`Could not read ${file.name} for issue preview storage.`))
+    }
+    reader.onload = () => {
+      if (typeof reader.result !== 'string') {
+        reject(new Error(`Could not serialize ${file.name} for issue preview storage.`))
+        return
+      }
+
+      resolve({
+        dataUrl: reader.result,
+        fileName: file.name,
+        mimeType: file.type || 'video/mp4',
+      })
+    }
+    reader.readAsDataURL(file)
+  })
 }
 
 export function GetVidAnalysisPage() {
   const inputId = useId()
   const [file, setFile] = useState<File | null>(null)
-  const [result, setResult] = useState<{
-    reason_flagged_as_issue: string | null
-    video_description: string
-  } | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const [incidentId, setIncidentId] = useState('')
+  const [cameraId, setCameraId] = useState('')
   const [loading, setLoading] = useState(false)
-
-  const submit = useCallback(async () => {
-    if (!file) {
-      setError('Choose a video file first.')
-      return
-    }
-    setError(null)
-    setResult(null)
-    setLoading(true)
-    try {
-      const form = new FormData()
-      form.append('file', file)
-      const res = await fetch(`${VIDEO_API_BASE}/api/analyze-video`, {
-        method: 'POST',
-        body: form,
-      })
-      let data: {
-        reason_flagged_as_issue?: string | null
-        video_description?: string
-        detail?: unknown
-      }
-      try {
-        data = (await res.json()) as typeof data
-      } catch {
-        throw new Error(res.ok ? 'Invalid JSON from server' : res.statusText)
-      }
-      if (!res.ok) {
-        const detail = formatApiDetail(data.detail) || res.statusText
-        throw new Error(detail || `Request failed (${res.status})`)
-      }
-      if (typeof data.video_description !== 'string') {
-        throw new Error('Unexpected response from server')
-      }
-      setResult({
-        reason_flagged_as_issue:
-          data.reason_flagged_as_issue === undefined ||
-          data.reason_flagged_as_issue === null
-            ? null
-            : String(data.reason_flagged_as_issue),
-        video_description: data.video_description,
-      })
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Something went wrong')
-    } finally {
-      setLoading(false)
-    }
-  }, [file])
+  const [error, setError] = useState<string | null>(null)
+  const [result, setResult] = useState<VideoAnalysisResult | null>(null)
+  const [savedIssue, setSavedIssue] = useState<Issue | null>(null)
+  const [saveError, setSaveError] = useState<string | null>(null)
 
   return (
     <div className="page">
       <div className="page-header">
-        <h1 className="page-title">Get Vid Analysis</h1>
+        <h1 className="page-title">Video analysis</h1>
         <p className="page-lead">
-          Upload a video. Frames are sampled on the server and sent to the same
-          OpenAI vision flow as the backend <code>video_agent</code> script. The
-          API returns JSON: whether the footage looks like an operational issue
-          (with a reason) and a short video summary.
+          Upload footage and send it to the backend FastAPI service for
+          frame-based incident analysis.
         </p>
       </div>
 
-      <section className="vid-analysis-panel" aria-labelledby="upload-heading">
-        <h2 id="upload-heading" className="settings-panel-title">
-          Upload
-        </h2>
-        <p className="vid-analysis-hint">
-          Supported types: MP4, MOV, WebM, MKV, AVI, M4V. Start the API with{' '}
-          <code>uvicorn main:app --reload</code> from the <code>Backend</code>{' '}
-          folder (Vite proxies <code>/api/py</code> to port 8000 in dev).
-        </p>
+      <section className="analysis-layout">
+        <form
+          className="analysis-card"
+          onSubmit={async (event) => {
+            event.preventDefault()
+            if (!file) {
+              setError('Choose a video before running the analysis.')
+              return
+            }
 
-        <div className="vid-analysis-controls">
-          <label className="sr-only" htmlFor={inputId}>
-            Video file
+            const formData = new FormData()
+            formData.append('video', file)
+            if (incidentId.trim()) formData.append('incident_id', incidentId)
+            if (cameraId.trim()) formData.append('camera_id', cameraId)
+
+            setLoading(true)
+            setError(null)
+            setSaveError(null)
+            setSavedIssue(null)
+
+            try {
+              const response = await fetch(buildEndpoint(API_BASE_URL), {
+                method: 'POST',
+                body: formData,
+              })
+
+              const payload = (await response.json()) as
+                | VideoAnalysisResult
+                | { detail?: unknown }
+
+              if (!response.ok) {
+                const detail =
+                  'detail' in payload ? formatApiDetail(payload.detail) : undefined
+                throw new Error(detail ?? 'Backend request failed.')
+              }
+
+              const analysisResult = payload as VideoAnalysisResult
+              setResult(analysisResult)
+
+              try {
+                const videoPreview = await readVideoPreview(file)
+                setSavedIssue(upsertVideoAnalysisIssue(analysisResult, videoPreview))
+              } catch (storageError) {
+                try {
+                  setSavedIssue(upsertVideoAnalysisIssue(analysisResult))
+                  setSaveError(
+                    storageError instanceof Error
+                      ? `Issue saved, but the original video could not be stored for dashboard playback: ${storageError.message}`
+                      : 'Issue saved, but the original video could not be stored for dashboard playback.',
+                  )
+                } catch (fallbackStorageError) {
+                  setSavedIssue(null)
+                  setSaveError(
+                    fallbackStorageError instanceof Error
+                      ? `Analysis succeeded, but saving the issue failed: ${fallbackStorageError.message}`
+                      : 'Analysis succeeded, but saving the issue failed.',
+                  )
+                }
+              }
+            } catch (requestError) {
+              setError(
+                requestError instanceof Error
+                  ? requestError.message
+                  : 'Unexpected analysis error.',
+              )
+            } finally {
+              setLoading(false)
+            }
+          }}
+        >
+          <div className="analysis-card-header">
+            <div>
+              <p className="panel-eyebrow">Backend upload form</p>
+              <h2 className="panel-title">Analyze video</h2>
+            </div>
+          </div>
+
+          <label className="field">
+            <span className="field-label">Incident ID</span>
+            <input
+              className="input"
+              placeholder="incident-123"
+              value={incidentId}
+              onChange={(event) => setIncidentId(event.target.value)}
+            />
           </label>
-          <input
-            id={inputId}
-            className="input vid-analysis-file"
-            type="file"
-            accept="video/*,.mp4,.mov,.webm,.mkv,.avi,.m4v"
-            disabled={loading}
-            onChange={(e) => {
-              const f = e.target.files?.[0] ?? null
-              setFile(f)
-              setError(null)
-              setResult(null)
-            }}
-          />
-          <button
-            type="button"
-            className="btn btn--primary"
-            disabled={loading || !file}
-            onClick={() => void submit()}
-          >
-            {loading ? 'Analyzing…' : 'Analyze video'}
+
+          <label className="field">
+            <span className="field-label">Camera ID</span>
+            <input
+              className="input"
+              placeholder="north-lobby-04"
+              value={cameraId}
+              onChange={(event) => setCameraId(event.target.value)}
+            />
+          </label>
+
+          <label className="field" htmlFor={inputId}>
+            <span className="field-label">Video file</span>
+            <input
+              id={inputId}
+              className="input input--file"
+              type="file"
+              accept="video/*,.mp4,.mov,.webm,.mkv,.avi,.m4v"
+              onChange={(event) => setFile(event.target.files?.item(0) ?? null)}
+            />
+          </label>
+
+          {file ? (
+            <p className="field-value">
+              Selected: {file.name} ({(file.size / (1024 * 1024)).toFixed(2)} MB)
+            </p>
+          ) : null}
+
+          <button type="submit" className="btn btn--primary" disabled={loading}>
+            {loading ? 'Analyzing…' : 'Run analysis'}
           </button>
-        </div>
 
-        {file ? (
-          <p className="vid-analysis-file-meta" aria-live="polite">
-            Selected: <strong>{file.name}</strong> ({(file.size / (1024 * 1024)).toFixed(2)} MB)
-          </p>
-        ) : null}
+          {error ? <p className="inline-error">{error}</p> : null}
+          {saveError ? <p className="inline-error">{saveError}</p> : null}
+          {savedIssue ? (
+            <p className="field-value">
+              Saved to the issue dashboard as <strong>{savedIssue.title}</strong>.
+            </p>
+          ) : null}
+        </form>
 
-        {error ? (
-          <div className="vid-analysis-error" role="alert">
-            {error}
-          </div>
-        ) : null}
-      </section>
-
-      {result ? (
-        <section className="vid-analysis-result" aria-labelledby="result-heading">
-          <h2 id="result-heading" className="settings-panel-title">
-            Analysis
-          </h2>
-          <div className="vid-analysis-fields">
-            <div className="vid-analysis-field">
-              <h3 className="vid-analysis-field-label">Reason flagged as an issue</h3>
-              <p className="vid-analysis-field-value">
-                {result.reason_flagged_as_issue?.trim()
-                  ? result.reason_flagged_as_issue
-                  : 'Not flagged (no issue reason).'}
-              </p>
-            </div>
-            <div className="vid-analysis-field">
-              <h3 className="vid-analysis-field-label">Video description</h3>
-              <p className="vid-analysis-field-value vid-analysis-field-value--body">
-                {result.video_description}
-              </p>
+        <section className="analysis-card">
+          <div className="analysis-card-header">
+            <div>
+              <p className="panel-eyebrow">Structured result</p>
+              <h2 className="panel-title">Latest response</h2>
             </div>
           </div>
+
+          {result ? (
+            <div className="analysis-result">
+              <div className="analysis-summary-row">
+                <span
+                  className={`issue-tag ${result.flagged ? 'issue-tag--unresolved' : 'issue-tag--resolved'}`}
+                >
+                  {result.flagged ? 'Flagged' : 'Not flagged'}
+                </span>
+                <span className="shell-pill">{result.severity}</span>
+              </div>
+
+              <div className="detail-grid">
+                <div>
+                  <p className="field-label">Incident type</p>
+                  <p className="field-value">{result.incident_type}</p>
+                </div>
+                <div>
+                  <p className="field-label">Primary department</p>
+                  <p className="field-value">{result.primary_department}</p>
+                </div>
+              </div>
+
+              <div>
+                <p className="field-label">Summary</p>
+                <p className="issue-description">{result.summary}</p>
+              </div>
+
+              <div>
+                <p className="field-label">Reasoning</p>
+                <p className="issue-description">{result.reasoning}</p>
+              </div>
+
+              <div>
+                <p className="field-label">Recommended actions</p>
+                <ul className="compact-list">
+                  {result.recommended_actions.map((action) => (
+                    <li key={action}>{action}</li>
+                  ))}
+                </ul>
+              </div>
+
+              <div>
+                <p className="field-label">Manual matches</p>
+                {result.manual_matches.length === 0 ? (
+                  <p className="field-value">No manual matches returned.</p>
+                ) : (
+                  <ul className="compact-list">
+                    {result.manual_matches.map((match) => (
+                      <li key={match.id}>
+                        <strong>{match.id}</strong>: {match.content}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </div>
+          ) : (
+            <p className="field-value">
+              No analysis yet. Submit a clip to populate this panel.
+            </p>
+          )}
         </section>
-      ) : null}
+      </section>
     </div>
   )
 }

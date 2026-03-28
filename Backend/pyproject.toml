@@ -1,18 +1,22 @@
 [project]
 name = "respondo-backend"
 version = "0.1.0"
-description = "FastAPI backend for Respondo (video analysis, etc.)"
-readme = false
-requires-python = ">=3.11"
+description = "FastAPI video analysis backend for Respondo."
+requires-python = ">=3.11,<3.15"
 dependencies = [
-  "railtracks",
-  "opencv-python",
-  "python-dotenv",
-  "fastapi",
-  "uvicorn[standard]",
-  "python-multipart",
-  "httpx",
+  "chromadb==1.5.5",
+  "fastapi==0.135.2",
+  "google-genai==1.69.0",
+  "httpx==0.28.1",
+  "opencv-python-headless>=4.10.0.84,<5.0.0",
+  "pdfplumber==0.11.9",
+  "pydantic==2.12.5",
+  "python-dotenv==1.2.2",
+  "python-multipart==0.0.22",
+  "railtracks==1.3.6",
+  "uvicorn[standard]==0.42.0",
 ]
 
-[tool.uv]
-package = false
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

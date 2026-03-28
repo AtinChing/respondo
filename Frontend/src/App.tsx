@@ -17,7 +17,7 @@ function App() {
           <IssueDashboard />
         ) : page === 'assets' ? (
           <AssetsPage />
-        ) : page === 'vid-analysis' ? (
+        ) : page === 'analysis' ? (
           <GetVidAnalysisPage />
         ) : page === 'phone-calls' ? (
           <CallPhonesPage />
